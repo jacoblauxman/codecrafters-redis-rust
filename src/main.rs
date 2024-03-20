@@ -7,7 +7,9 @@ fn main() {
         match stream {
             Ok(mut stream) => {
                 println!("accepted new connection");
-                connection_handler(&mut stream);
+                loop {
+                    connection_handler(&mut stream);
+                }
             }
             Err(e) => {
                 println!("error: {}", e);
