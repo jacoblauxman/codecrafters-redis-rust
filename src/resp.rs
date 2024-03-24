@@ -11,7 +11,7 @@ const ECHO: &str = "ECHO";
 const PING: &str = "PING";
 const SET: &str = "SET";
 const GET: &str = "GET";
-const INFO: &str = "INFO";
+const _INFO: &str = "INFO";
 
 #[derive(Debug)]
 pub enum RespCommand {
@@ -25,7 +25,7 @@ pub enum RespCommand {
         val: Vec<u8>,
         expiry: Option<u64>,
     },
-    Info(String),
+    // Info(String),
     // ... more?
 }
 
