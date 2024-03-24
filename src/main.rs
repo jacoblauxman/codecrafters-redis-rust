@@ -7,7 +7,8 @@ use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:6379")
+    let port = std::env::args().nth(2).unwrap_or("6379".to_string());
+    let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
         .await
         .context("Failed to bind TCP Listener to address")?;
 
