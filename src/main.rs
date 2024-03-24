@@ -1,10 +1,9 @@
 use anyhow::Context;
 use redis_starter_rust::resp::RespHandler;
+use redis_starter_rust::Db;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::net::{TcpListener, TcpStream};
-
-type Db = Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

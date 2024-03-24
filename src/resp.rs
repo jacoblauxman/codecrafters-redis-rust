@@ -1,6 +1,7 @@
 use crate::Db;
 use anyhow::Context;
 use bytes::{Buf, BytesMut};
+use std::time::{Duration, SystemTime};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufWriter},
     net::TcpStream,
@@ -15,8 +16,14 @@ const GET: &str = "GET";
 pub enum RespCommand {
     Ping,
     Echo(String),
-    Get { key: Vec<u8> },
-    Set { key: Vec<u8>, val: Vec<u8> },
+    Get {
+        key: Vec<u8>,
+    },
+    Set {
+        key: Vec<u8>,
+        val: Vec<u8>,
+        expiry: Option<u64>,
+    },
     // ... more?
 }
 
@@ -123,9 +130,6 @@ impl RespHandler {
     }
 
     pub fn parse_frame(&mut self) -> anyhow::Result<Option<RespFrame>> {
-        let data = std::str::from_utf8(&self.buf)?;
-        println!("DATA IN PARSE: {data:?}");
-
         if !self.buf.has_remaining() {
             return Ok(None);
         }
@@ -178,9 +182,30 @@ impl RespHandler {
                     SET => {
                         if let Some(RespFrame::BulkString(key_bytes)) = resp_frames.get(1) {
                             if let Some(RespFrame::BulkString(val_bytes)) = resp_frames.get(2) {
+                                let mut expiry = None;
+                                if resp_frames.len() > 4 {
+                                    if let Some(RespFrame::BulkString(flag_bytes)) =
+                                        resp_frames.get(3)
+                                    {
+                                        let flag =
+                                            String::from_utf8_lossy(&flag_bytes[..]).to_uppercase();
+                                        if flag == "PX" {
+                                            if let Some(RespFrame::BulkString(expiry_bytes)) =
+                                                resp_frames.get(4)
+                                            {
+                                                expiry = Some(String::from_utf8_lossy(
+                                                    &expiry_bytes[..],
+                                                ).parse::<u64>().context("Invalid flag parameter provided while parsing `px` expiration time (ms)")?);
+                                            }
+                                        } else {
+                                            return Err(anyhow::anyhow!("Invalid or Unimplemented RESP flag received while parsing `SET` command"));
+                                        }
+                                    }
+                                }
                                 return Ok(RespCommand::Set {
                                     key: key_bytes.clone(),
                                     val: val_bytes.clone(),
+                                    expiry,
                                 });
                             } else {
                                 return Err(anyhow::anyhow!(
@@ -225,16 +250,31 @@ impl RespHandler {
             RespCommand::Ping => RespFrame::SimpleString("PONG".to_string()),
             RespCommand::Echo(payload) => RespFrame::BulkString(payload.as_bytes().to_vec()),
             RespCommand::Get { key } => {
-                let db = db.lock().unwrap();
-                if let Some(val) = db.get(key) {
-                    RespFrame::BulkString(val.clone())
+                let mut db = db.lock().unwrap();
+                if let Some((val, expiry)) = db.get(key) {
+                    if let Some(exp_time) = expiry {
+                        if SystemTime::now() < *exp_time {
+                            RespFrame::BulkString(val.clone())
+                        } else {
+                            db.remove(key);
+                            RespFrame::NullBulkString
+                        }
+                    } else {
+                        RespFrame::BulkString(val.clone())
+                    }
                 } else {
                     RespFrame::NullBulkString
                 }
             }
-            RespCommand::Set { key, val } => {
+            RespCommand::Set { key, val, expiry } => {
                 let mut db = db.lock().unwrap();
-                db.insert(key.clone(), val.clone());
+                db.insert(
+                    key.clone(),
+                    (
+                        val.clone(),
+                        expiry.map(|ms| SystemTime::now() + Duration::from_millis(ms)),
+                    ),
+                );
                 RespFrame::SimpleString("OK".to_string())
             }
         };
@@ -291,3 +331,8 @@ pub fn read_crlf_line(buf: &mut BytesMut) -> anyhow::Result<Option<Vec<u8>>> {
 // *2\r\n$3\r\nget\r\n$10\r\nstrawberry\r\n
 // -- response format:
 // $5\r\nmango\r\n
+
+// -- "set" with "px":
+// *5\r\n$3\r\nset\r\n$5\r\napple\r\n$9\r\npineapple\r\n$2\r\npx\r\n$3\r\n100\r\n
+// -- response upon "get" after "px" (miliseconds) duration expired format:
+// $-1\r\n
