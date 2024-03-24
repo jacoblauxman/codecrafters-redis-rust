@@ -1,6 +1,10 @@
 use anyhow::Context;
 use redis_starter_rust::resp::RespHandler;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use tokio::net::{TcpListener, TcpStream};
+
+type Db = Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -8,13 +12,15 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("Failed to bind TCP Listener to address")?;
 
+    let resp_db: Db = Arc::new(Mutex::new(HashMap::new()));
+
     loop {
         match listener.accept().await {
             Ok((stream, _socketaddr)) => {
                 println!("accepted new connection");
-
+                let mut db = resp_db.clone();
                 tokio::spawn(async move {
-                    if let Err(err) = connection_handler(stream).await {
+                    if let Err(err) = connection_handler(stream, &mut db).await {
                         eprintln!("Error handling connection: {:?}", err);
                     }
                 });
@@ -26,13 +32,13 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn connection_handler(stream: TcpStream) -> anyhow::Result<()> {
+async fn connection_handler(stream: TcpStream, resp_db: &mut Db) -> anyhow::Result<()> {
     let mut resp_handler = RespHandler::new(stream);
 
     loop {
         if let Some(req_frame) = resp_handler.read_frame().await? {
             let resp_cmd = resp_handler.parse_command(&req_frame)?;
-            let _res_frame = resp_handler.write_frame(&resp_cmd).await?;
+            let _ = resp_handler.write_frame(&resp_cmd, resp_db).await?;
         }
     }
 }

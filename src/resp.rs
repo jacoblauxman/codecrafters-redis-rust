@@ -1,3 +1,4 @@
+use crate::Db;
 use anyhow::Context;
 use bytes::{Buf, BytesMut};
 use tokio::{
@@ -7,18 +8,15 @@ use tokio::{
 
 const ECHO: &str = "ECHO";
 const PING: &str = "PING";
+const SET: &str = "SET";
+const GET: &str = "GET";
 
 #[derive(Debug)]
 pub enum RespCommand {
     Ping,
     Echo(String),
-    // Get {
-    //     key: String,
-    // },
-    // Set {
-    //     key: String,
-    //     val: Bytes,
-    // },
+    Get { key: Vec<u8> },
+    Set { key: Vec<u8>, val: Vec<u8> },
     // ... more?
 }
 
@@ -28,7 +26,7 @@ pub enum RespFrame {
     BulkString(Vec<u8>),
     SimpleString(String),
     Error(String),
-    Null,
+    NullBulkString,
 }
 
 pub fn serialize(resp_frame: &RespFrame) -> Vec<u8> {
@@ -57,7 +55,7 @@ pub fn serialize(resp_frame: &RespFrame) -> Vec<u8> {
 
             frame_bytes
         }
-        RespFrame::Null => format!("$-1\r\n").into_bytes(),
+        RespFrame::NullBulkString => format!("$-1\r\n").into_bytes(),
         RespFrame::Error(payload) => format!("-{}\r\n", payload).into_bytes(),
     }
 }
@@ -95,7 +93,7 @@ impl RespHandler {
 
         if frame_len as i64 == -1 {
             self.buf.advance(2);
-            return Ok(Some(RespFrame::Null));
+            return Ok(Some(RespFrame::NullBulkString));
         }
 
         let payload = read_crlf_line(&mut self.buf)?.unwrap();
@@ -125,6 +123,9 @@ impl RespHandler {
     }
 
     pub fn parse_frame(&mut self) -> anyhow::Result<Option<RespFrame>> {
+        let data = std::str::from_utf8(&self.buf)?;
+        println!("DATA IN PARSE: {data:?}");
+
         if !self.buf.has_remaining() {
             return Ok(None);
         }
@@ -170,7 +171,36 @@ impl RespHandler {
                             return Ok(RespCommand::Echo(echo_string));
                         } else {
                             return Err(anyhow::anyhow!(
-                                "Invalid RESP command format received while parsing"
+                                "Invalid RESP command format received while parsing `ECHO`"
+                            ));
+                        }
+                    }
+                    SET => {
+                        if let Some(RespFrame::BulkString(key_bytes)) = resp_frames.get(1) {
+                            if let Some(RespFrame::BulkString(val_bytes)) = resp_frames.get(2) {
+                                return Ok(RespCommand::Set {
+                                    key: key_bytes.clone(),
+                                    val: val_bytes.clone(),
+                                });
+                            } else {
+                                return Err(anyhow::anyhow!(
+                                    "Invalid RESP format received while parsing `SET` command"
+                                ));
+                            }
+                        } else {
+                            return Err(anyhow::anyhow!(
+                                "Invalid RESP format received while parsing `SET` command"
+                            ));
+                        }
+                    }
+                    GET => {
+                        if let Some(RespFrame::BulkString(key_bytes)) = resp_frames.get(1) {
+                            return Ok(RespCommand::Get {
+                                key: key_bytes.clone(),
+                            });
+                        } else {
+                            return Err(anyhow::anyhow!(
+                                "Invalid Resp format received while parsing `GET` command"
                             ));
                         }
                     }
@@ -190,10 +220,23 @@ impl RespHandler {
 
     // -- WRITE / RESPONSE -- //
 
-    pub async fn write_frame(&mut self, resp_cmd: &RespCommand) -> anyhow::Result<()> {
+    pub async fn write_frame(&mut self, resp_cmd: &RespCommand, db: &mut Db) -> anyhow::Result<()> {
         let resp_frame = match resp_cmd {
             RespCommand::Ping => RespFrame::SimpleString("PONG".to_string()),
             RespCommand::Echo(payload) => RespFrame::BulkString(payload.as_bytes().to_vec()),
+            RespCommand::Get { key } => {
+                let db = db.lock().unwrap();
+                if let Some(val) = db.get(key) {
+                    RespFrame::BulkString(val.clone())
+                } else {
+                    RespFrame::NullBulkString
+                }
+            }
+            RespCommand::Set { key, val } => {
+                let mut db = db.lock().unwrap();
+                db.insert(key.clone(), val.clone());
+                RespFrame::SimpleString("OK".to_string())
+            }
         };
         let frame_bytes = serialize(&resp_frame);
 
@@ -217,7 +260,7 @@ pub fn read_crlf_line(buf: &mut BytesMut) -> anyhow::Result<Option<Vec<u8>>> {
     for i in 1..buf.len() {
         if buf[i - 1] == b'\r' && buf[i] == b'\n' {
             let line = buf.split_to(i - 1).to_vec();
-            buf.advance(2); // NOTE: may need to be adv. '1' instead?
+            buf.advance(2);
 
             return Ok(Some(line));
         }
@@ -238,3 +281,13 @@ pub fn read_crlf_line(buf: &mut BytesMut) -> anyhow::Result<Option<Vec<u8>>> {
 // *2\r\n$4\r\necho\r\n$3\r\nhey\r\n
 // -- response format:
 // $3\r\nhey\r\n
+
+// -- "set":
+// *3\r\n$3\r\nset\r\n$10\r\nstrawberry\r\n$5\r\nmango\r\n
+// -- response format:
+// +OK\r\n
+
+// -- "get":
+// *2\r\n$3\r\nget\r\n$10\r\nstrawberry\r\n
+// -- response format:
+// $5\r\nmango\r\n
