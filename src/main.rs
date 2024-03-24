@@ -1,23 +1,20 @@
 use anyhow::Context;
-use bytes::{BufMut, BytesMut};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
-};
+use redis_starter_rust::resp::RespHandler;
+use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:6379")
         .await
-        .context("Failed to bind TcpListener to address")?;
+        .context("Failed to bind TCP Listener to address")?;
 
     loop {
         match listener.accept().await {
-            Ok((mut stream, _socketaddr)) => {
+            Ok((stream, _socketaddr)) => {
                 println!("accepted new connection");
 
                 tokio::spawn(async move {
-                    if let Err(err) = connection_handler(&mut stream).await {
+                    if let Err(err) = connection_handler(stream).await {
                         eprintln!("Error handling connection: {:?}", err);
                     }
                 });
@@ -29,34 +26,13 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn connection_handler(stream: &mut TcpStream) -> anyhow::Result<()> {
-    let mut res_buf = BytesMut::new();
-    let mut req_buf = BytesMut::new();
+async fn connection_handler(stream: TcpStream) -> anyhow::Result<()> {
+    let mut resp_handler = RespHandler::new(stream);
 
     loop {
-        req_buf.reserve(512);
-        let req_read = stream
-            .read_buf(&mut req_buf)
-            .await
-            .context("Failed to read in request from TcpStream")?;
-
-        if req_read == 0 {
-            break;
+        if let Some(req_frame) = resp_handler.read_frame().await? {
+            let resp_cmd = resp_handler.parse_command(&req_frame)?;
+            let _res_frame = resp_handler.write_frame(&resp_cmd).await?;
         }
-
-        res_buf.put_slice(b"+PONG\r\n");
-        stream
-            .write_all(&res_buf)
-            .await
-            .context("Failed to write response buffer to TcpStream")?;
-
-        stream
-            .flush()
-            .await
-            .context("Failed to flush TcpStream response writer")?;
-        res_buf.clear();
-        req_buf.clear();
     }
-
-    Ok(())
 }
