@@ -12,6 +12,7 @@ const PING: &str = "PING";
 const SET: &str = "SET";
 const GET: &str = "GET";
 const INFO: &str = "INFO";
+const _REPLCONF: &str = "REPLCONF";
 
 #[derive(Debug)]
 pub enum RespCommand {
@@ -26,6 +27,7 @@ pub enum RespCommand {
         expiry: Option<u64>,
     },
     Info(String),
+    ReplConf,
     // ... more?
 }
 
@@ -58,6 +60,8 @@ pub fn serialize(resp_frame: &RespFrame) -> Vec<u8> {
 
             frame_bytes.push(b'*');
             frame_bytes.extend(payload.len().to_string().into_bytes());
+            frame_bytes.extend(b"\r\n");
+            // ^^note: needed for break between arr. len and content values -- TODO: clean up
             payload
                 .iter()
                 .for_each(|resp_frame| frame_bytes.extend(serialize(resp_frame)));
@@ -285,6 +289,9 @@ impl RespHandler {
                         // todo: make dynamic + remove hardcoded "replication" value
                         return Ok(RespCommand::Info("replication".to_string()));
                     }
+                    _REPLCONF => {
+                        todo!()
+                    }
                     _ => todo!(), // other commands to be implemented
                 }
             } else {
@@ -349,6 +356,7 @@ impl RespHandler {
                     _ => unreachable!(),
                 }
             }
+            RespCommand::ReplConf => RespFrame::SimpleString("OK".to_string()),
         };
 
         let frame_bytes = serialize(&resp_frame);

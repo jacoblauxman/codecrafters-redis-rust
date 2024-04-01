@@ -1,8 +1,9 @@
 use anyhow::Context;
-use redis_starter_rust::resp::RespHandler;
+use redis_starter_rust::resp::{serialize, RespFrame, RespHandler};
 use redis_starter_rust::Db;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::main]
@@ -28,7 +29,13 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    println!("{replicaof_args:?}");
+    println!("REPLICAOF ARGS: {replicaof_args:?}");
+    if replicaof_args.is_some() {
+        let (master_host, master_port) = replicaof_args.clone().unwrap();
+        send_connection_handshake(master_host, master_port, &port).await?;
+    }
+
+    println!("PORT ARG: {port:?}");
 
     let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
         .await
@@ -62,8 +69,7 @@ async fn connection_handler(
     resp_db: &mut Db,
     replicaof_params: Option<(String, String)>,
 ) -> anyhow::Result<()> {
-    // let mut resp_handler = RespHandler::new(stream);
-    let mut resp_handler = RespHandler::new(stream, replicaof_params);
+    let mut resp_handler = RespHandler::new(stream, replicaof_params.clone());
 
     loop {
         if let Some(req_frame) = resp_handler.read_frame().await? {
@@ -73,6 +79,107 @@ async fn connection_handler(
     }
 }
 
+pub async fn send_connection_handshake(
+    mut master_host: String,
+    master_port: String,
+    port: &u16,
+) -> anyhow::Result<()> {
+    if master_host.as_str() == "localhost" {
+        master_host = "127.0.0.1".to_string();
+    }
+    let master_addr = format!("{}:{}", master_host, master_port);
+    println!("MASTER ADDR: {master_addr:?}");
+
+    // 1) PING
+    let ping_frame = RespFrame::Array(vec![RespFrame::BulkString("PING".as_bytes().to_vec())]);
+    let ping_bytes = serialize(&ping_frame);
+    // println!(
+    //     "replica sent bytes to `master`: {:?}",
+    //     String::from_utf8_lossy(&ping_bytes)
+    // );
+    let mut master_stream = TcpStream::connect(&master_addr)
+        .await
+        .context("Failed to connect to `master` instance")?;
+
+    master_stream
+        .write_all(&ping_bytes)
+        .await
+        .context("Failed to send PING command to `master` instance")?;
+
+    master_stream
+        .flush()
+        .await
+        .context("Failed to flush handshake stream after PING command sent to `master` instance")?;
+
+    let mut master_res_buf = [0; 512];
+    master_stream
+        .read(&mut master_res_buf)
+        .await
+        .context("Failed to read or receive `pong` response from `master` instance in handshake")?;
+    println!(
+        "RES FROM `MASTER`: {:?}",
+        String::from_utf8_lossy(&master_res_buf)
+    );
+
+    // 2) REPLCONF
+
+    println!("PORT IN HANDSHAKE SEND: {port}");
+    // `Listening`
+    let replconf_listen_bytes = serialize(&RespFrame::Array(vec![
+        RespFrame::BulkString(b"REPLCONF".to_vec()),
+        RespFrame::BulkString(b"listening-port".to_vec()),
+        RespFrame::BulkString(b"{port}".to_vec()),
+    ]));
+
+    master_stream
+        .write_all(&replconf_listen_bytes)
+        .await
+        .context("Failed to write `REPLCONF` for handshake to `master` instance")?;
+
+    master_stream.flush().await.context(
+        "Failed to flush stream to `master` after writing `REPLCONF` 'listening' command",
+    )?;
+
+    master_stream
+        .read(&mut master_res_buf)
+        .await
+        .context("Failed to read or receive `OK` response from `master` instance after `REPLCONF` 'listening' cmd in handshake")?;
+    println!(
+        "RES FROM `MASTER`: {:?}",
+        String::from_utf8_lossy(&master_res_buf)
+    );
+
+    // `Capabilities`
+    let replconf_capa_bytes = serialize(&RespFrame::Array(vec![
+        RespFrame::BulkString(b"REPLCONF".to_vec()),
+        RespFrame::BulkString(b"capa".to_vec()),
+        RespFrame::BulkString(b"psync2".to_vec()),
+    ]));
+
+    master_stream
+        .write_all(&replconf_capa_bytes)
+        .await
+        .context("Failed to write `REPLCONF` for handshake to `master` instance")?;
+
+    master_stream.flush().await.context(
+        "Failed to flush stream to `master` after writing `REPLCONF` 'capabilities' command",
+    )?;
+
+    master_stream
+        .read(&mut master_res_buf)
+        .await
+        .context("Failed to read or receive `OK` response from `master` instance after `REPLCONF` 'capabilities' cmd in handshake")?;
+    println!(
+        "RES FROM `MASTER`: {:?}",
+        String::from_utf8_lossy(&master_res_buf)
+    );
+
+    Ok(())
+}
+
+//
+//
+//
 fn parse_args(args: impl Iterator<Item = String>) -> HashMap<String, Vec<String>> {
     let mut flags = HashMap::new();
     let mut iter = args.peekable();
