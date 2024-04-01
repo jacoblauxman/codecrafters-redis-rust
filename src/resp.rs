@@ -12,7 +12,7 @@ const PING: &str = "PING";
 const SET: &str = "SET";
 const GET: &str = "GET";
 const INFO: &str = "INFO";
-const _REPLCONF: &str = "REPLCONF";
+const REPLCONF: &str = "REPLCONF";
 
 #[derive(Debug)]
 pub enum RespCommand {
@@ -289,8 +289,8 @@ impl RespHandler {
                         // todo: make dynamic + remove hardcoded "replication" value
                         return Ok(RespCommand::Info("replication".to_string()));
                     }
-                    _REPLCONF => {
-                        todo!()
+                    REPLCONF => {
+                        return Ok(RespCommand::ReplConf);
                     }
                     _ => todo!(), // other commands to be implemented
                 }
