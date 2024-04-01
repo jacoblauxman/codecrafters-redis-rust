@@ -72,15 +72,25 @@ pub fn serialize(resp_frame: &RespFrame) -> Vec<u8> {
 #[derive(Debug, Clone)]
 pub struct ReplicationInfo {
     role: String,
+    _master_replid: String,
+    _master_repl_offset: u32,
     _master_host: Option<String>,
     _master_port: Option<String>,
     // todo: add more fields... ?
 }
 
+// #[derive(Debug)]
+// pub enum ReplicationRole {
+//     Master,
+//     Slave
+// }
+
 impl ReplicationInfo {
     fn new_master() -> Self {
         Self {
             role: "master".to_string(),
+            _master_replid: "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb".to_string(),
+            _master_repl_offset: 0,
             _master_host: None,
             _master_port: None,
         }
@@ -89,6 +99,8 @@ impl ReplicationInfo {
     fn new_slave(master_host: String, master_port: String) -> Self {
         Self {
             role: "slave".to_string(),
+            _master_replid: "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb".to_string(),
+            _master_repl_offset: 0,
             _master_host: Some(master_host),
             _master_port: Some(master_port),
         }
@@ -321,13 +333,17 @@ impl RespHandler {
                 );
                 RespFrame::SimpleString("OK".to_string())
             }
+            // todo: serialization method for `ReplicationInfo`?
             RespCommand::Info(_) => {
-                let role = &self.replication_info.role;
-
-                match role.to_uppercase().as_str() {
+                match self.replication_info.role.to_uppercase().as_str() {
                     "MASTER" => {
-                        // todo: fill out more details / push frames for response
-                        RespFrame::BulkString("role:master".as_bytes().to_vec())
+                        let info = format!(
+                            "role:master\nmaster_replid:{}\nmaster_repl_offset:{}",
+                            self.replication_info._master_replid,
+                            self.replication_info._master_repl_offset
+                        );
+                        // RespFrame::BulkString("role:master".as_bytes().to_vec())
+                        RespFrame::BulkString(info.as_bytes().to_vec())
                     }
                     "SLAVE" => RespFrame::BulkString("role:slave".as_bytes().to_vec()),
                     _ => unreachable!(),
