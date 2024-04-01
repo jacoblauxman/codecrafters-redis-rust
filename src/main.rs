@@ -18,7 +18,7 @@ async fn main() -> anyhow::Result<()> {
     .parse::<u16>()
     .context("Invalid port value provided")?;
 
-    let _replicaof_params = if let Some(replicaof_val) = flags.get("replicaof") {
+    let replicaof_args = if let Some(replicaof_val) = flags.get("replicaof") {
         if replicaof_val.len() >= 2 {
             Some((replicaof_val[0].clone(), replicaof_val[1].clone()))
         } else {
@@ -27,6 +27,8 @@ async fn main() -> anyhow::Result<()> {
     } else {
         None
     };
+
+    println!("{replicaof_args:?}");
 
     let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
         .await
@@ -39,8 +41,10 @@ async fn main() -> anyhow::Result<()> {
             Ok((stream, _socketaddr)) => {
                 println!("accepted new connection");
                 let mut db = resp_db.clone();
+                let replicaof_params = replicaof_args.clone();
                 tokio::spawn(async move {
-                    if let Err(err) = connection_handler(stream, &mut db).await {
+                    // if let Err(err) = connection_handler(stream, &mut db).await {
+                    if let Err(err) = connection_handler(stream, &mut db, replicaof_params).await {
                         eprintln!("Error handling connection: {:?}", err);
                     }
                 });
@@ -52,8 +56,14 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn connection_handler(stream: TcpStream, resp_db: &mut Db) -> anyhow::Result<()> {
-    let mut resp_handler = RespHandler::new(stream);
+// async fn connection_handler(stream: TcpStream, resp_db: &mut Db) -> anyhow::Result<()> {
+async fn connection_handler(
+    stream: TcpStream,
+    resp_db: &mut Db,
+    replicaof_params: Option<(String, String)>,
+) -> anyhow::Result<()> {
+    // let mut resp_handler = RespHandler::new(stream);
+    let mut resp_handler = RespHandler::new(stream, replicaof_params);
 
     loop {
         if let Some(req_frame) = resp_handler.read_frame().await? {

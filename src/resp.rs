@@ -69,17 +69,52 @@ pub fn serialize(resp_frame: &RespFrame) -> Vec<u8> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ReplicationInfo {
+    role: String,
+    _master_host: Option<String>,
+    _master_port: Option<String>,
+    // todo: add more fields... ?
+}
+
+impl ReplicationInfo {
+    fn new_master() -> Self {
+        Self {
+            role: "master".to_string(),
+            _master_host: None,
+            _master_port: None,
+        }
+    }
+
+    fn new_slave(master_host: String, master_port: String) -> Self {
+        Self {
+            role: "slave".to_string(),
+            _master_host: Some(master_host),
+            _master_port: Some(master_port),
+        }
+    }
+}
+
 pub struct RespHandler {
     stream: BufWriter<TcpStream>,
     buf: BytesMut,
     // todo: create role field for "info" + handling of `replicaof` cmd flag input value(s) -- new + default
+    replication_info: ReplicationInfo,
 }
 
 impl RespHandler {
-    pub fn new(stream: TcpStream) -> Self {
+    // pub fn new(stream: TcpStream) -> Self {
+    pub fn new(stream: TcpStream, replicaof_params: Option<(String, String)>) -> Self {
+        let replication_info = if let Some((master_host, master_port)) = replicaof_params {
+            ReplicationInfo::new_slave(master_host, master_port)
+        } else {
+            ReplicationInfo::new_master()
+        };
+
         RespHandler {
             stream: BufWriter::new(stream),
             buf: BytesMut::with_capacity(4 * 1024),
+            replication_info,
         }
     }
 
@@ -235,6 +270,7 @@ impl RespHandler {
                         }
                     }
                     INFO => {
+                        // todo: make dynamic + remove hardcoded "replication" value
                         return Ok(RespCommand::Info("replication".to_string()));
                     }
                     _ => todo!(), // other commands to be implemented
@@ -285,11 +321,20 @@ impl RespHandler {
                 );
                 RespFrame::SimpleString("OK".to_string())
             }
-            RespCommand::Info(_info_arg) => {
-                // todo: dynamic response regarding `role` (develop 'Info' type/state?)
-                RespFrame::BulkString("role:master".as_bytes().to_vec())
+            RespCommand::Info(_) => {
+                let role = &self.replication_info.role;
+
+                match role.to_uppercase().as_str() {
+                    "MASTER" => {
+                        // todo: fill out more details / push frames for response
+                        RespFrame::BulkString("role:master".as_bytes().to_vec())
+                    }
+                    "SLAVE" => RespFrame::BulkString("role:slave".as_bytes().to_vec()),
+                    _ => unreachable!(),
+                }
             }
         };
+
         let frame_bytes = serialize(&resp_frame);
 
         self.stream
