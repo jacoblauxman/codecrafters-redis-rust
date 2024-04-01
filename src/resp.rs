@@ -13,6 +13,7 @@ const SET: &str = "SET";
 const GET: &str = "GET";
 const INFO: &str = "INFO";
 const REPLCONF: &str = "REPLCONF";
+const PSYNC: &str = "PSYNC";
 
 #[derive(Debug)]
 pub enum RespCommand {
@@ -27,8 +28,9 @@ pub enum RespCommand {
         expiry: Option<u64>,
     },
     Info(String),
+    // todo: dynamically read these command values (not currently implemented)
     ReplConf,
-    // ... more?
+    PSync, // ... more?
 }
 
 #[derive(Debug)]
@@ -292,6 +294,9 @@ impl RespHandler {
                     REPLCONF => {
                         return Ok(RespCommand::ReplConf);
                     }
+                    PSYNC => {
+                        return Ok(RespCommand::PSync);
+                    }
                     _ => todo!(), // other commands to be implemented
                 }
             } else {
@@ -357,6 +362,10 @@ impl RespHandler {
                 }
             }
             RespCommand::ReplConf => RespFrame::SimpleString("OK".to_string()),
+            RespCommand::PSync => RespFrame::SimpleString(format!(
+                "FULLRESYNC {} 0",
+                &self.replication_info._master_replid
+            )),
         };
 
         let frame_bytes = serialize(&resp_frame);

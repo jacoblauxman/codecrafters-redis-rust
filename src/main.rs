@@ -153,6 +153,29 @@ pub async fn send_connection_handshake(
         .await
         .context("Failed to read or receive `OK` response from `master` instance after `REPLCONF` 'capabilities' cmd in handshake")?;
 
+    // 3) PSYNC
+
+    let psync_init_bytes = serialize(&RespFrame::Array(vec![
+        RespFrame::BulkString("PSYNC".as_bytes().to_vec()),
+        RespFrame::BulkString("?".as_bytes().to_vec()),
+        RespFrame::BulkString("-1".as_bytes().to_vec()),
+    ]));
+
+    master_stream
+        .write_all(&psync_init_bytes)
+        .await
+        .context("Failed to write `PSYNC` cmd for handshake to `master` instance")?;
+
+    master_stream
+        .flush()
+        .await
+        .context("Failed to flush stream to `master` after writing `PSYNC` command")?;
+
+    master_stream
+        .read(&mut master_res_buf)
+        .await
+        .context("Failed to read or receive `FULLRESYNC` response from `master` instance after `PYSNC` cmd in handshake")?;
+
     Ok(())
 }
 
