@@ -11,7 +11,7 @@ const ECHO: &str = "ECHO";
 const PING: &str = "PING";
 const SET: &str = "SET";
 const GET: &str = "GET";
-const _INFO: &str = "INFO";
+const INFO: &str = "INFO";
 
 #[derive(Debug)]
 pub enum RespCommand {
@@ -25,7 +25,7 @@ pub enum RespCommand {
         val: Vec<u8>,
         expiry: Option<u64>,
     },
-    // Info(String),
+    Info(String),
     // ... more?
 }
 
@@ -72,6 +72,7 @@ pub fn serialize(resp_frame: &RespFrame) -> Vec<u8> {
 pub struct RespHandler {
     stream: BufWriter<TcpStream>,
     buf: BytesMut,
+    // todo: create role field for "info" + handling of `replicaof` cmd flag input value(s) -- new + default
 }
 
 impl RespHandler {
@@ -132,6 +133,8 @@ impl RespHandler {
     }
 
     pub fn parse_frame(&mut self) -> anyhow::Result<Option<RespFrame>> {
+        // let data = std::str::from_utf8(&self.buf)?;
+        // println!("DATA IN PARSE: {data:?}");
         if !self.buf.has_remaining() {
             return Ok(None);
         }
@@ -231,6 +234,9 @@ impl RespHandler {
                             ));
                         }
                     }
+                    INFO => {
+                        return Ok(RespCommand::Info("replication".to_string()));
+                    }
                     _ => todo!(), // other commands to be implemented
                 }
             } else {
@@ -278,6 +284,10 @@ impl RespHandler {
                     ),
                 );
                 RespFrame::SimpleString("OK".to_string())
+            }
+            RespCommand::Info(_info_arg) => {
+                // todo: dynamic response regarding `role` (develop 'Info' type/state?)
+                RespFrame::BulkString("role:master".as_bytes().to_vec())
             }
         };
         let frame_bytes = serialize(&resp_frame);
