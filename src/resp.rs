@@ -15,6 +15,8 @@ const INFO: &str = "INFO";
 const REPLCONF: &str = "REPLCONF";
 const PSYNC: &str = "PSYNC";
 
+const EMPTY_RDB_HEX: &str = "524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2";
+
 #[derive(Debug)]
 pub enum RespCommand {
     Ping,
@@ -121,7 +123,6 @@ pub struct RespHandler {
 }
 
 impl RespHandler {
-    // pub fn new(stream: TcpStream) -> Self {
     pub fn new(stream: TcpStream, replicaof_params: Option<(String, String)>) -> Self {
         let replication_info = if let Some((master_host, master_port)) = replicaof_params {
             ReplicationInfo::new_slave(master_host, master_port)
@@ -346,21 +347,18 @@ impl RespHandler {
                 RespFrame::SimpleString("OK".to_string())
             }
             // todo: serialization method for `ReplicationInfo`?
-            RespCommand::Info(_) => {
-                match self.replication_info.role.to_uppercase().as_str() {
-                    "MASTER" => {
-                        let info = format!(
-                            "role:master\nmaster_replid:{}\nmaster_repl_offset:{}",
-                            self.replication_info._master_replid,
-                            self.replication_info._master_repl_offset
-                        );
-                        // RespFrame::BulkString("role:master".as_bytes().to_vec())
-                        RespFrame::BulkString(info.as_bytes().to_vec())
-                    }
-                    "SLAVE" => RespFrame::BulkString("role:slave".as_bytes().to_vec()),
-                    _ => unreachable!(),
+            RespCommand::Info(_) => match self.replication_info.role.to_uppercase().as_str() {
+                "MASTER" => {
+                    let info = format!(
+                        "role:master\nmaster_replid:{}\nmaster_repl_offset:{}",
+                        self.replication_info._master_replid,
+                        self.replication_info._master_repl_offset
+                    );
+                    RespFrame::BulkString(info.as_bytes().to_vec())
                 }
-            }
+                "SLAVE" => RespFrame::BulkString("role:slave".as_bytes().to_vec()),
+                _ => unreachable!(),
+            },
             RespCommand::ReplConf => RespFrame::SimpleString("OK".to_string()),
             RespCommand::PSync => RespFrame::SimpleString(format!(
                 "FULLRESYNC {} 0",
@@ -382,6 +380,33 @@ impl RespHandler {
 
         self.buf.clear();
 
+        // TODO: check whether prior written "resp_frame" is 'FULLRESYNC' (`payload` from RespFrame::SimpleString(payload) `contains` 'FULLRESYNC')
+        // -> prepare 'second' frame write and create a new response to write containing file content!
+
+        if let RespFrame::SimpleString(payload) = &resp_frame {
+            if payload.contains("FULLRESYNC") {
+                let empty_rdb_contents = parse_hex(EMPTY_RDB_HEX);
+                let empty_content_len = empty_rdb_contents.len().to_string();
+                let mut empty_rdb_bytes = Vec::new();
+                empty_rdb_bytes.push(b'$');
+                empty_rdb_bytes.extend_from_slice(&empty_content_len.as_bytes());
+                empty_rdb_bytes.extend_from_slice(b"\r\n");
+                empty_rdb_bytes.extend_from_slice(&empty_rdb_contents);
+
+                self.stream
+                    .write_all(&empty_rdb_bytes)
+                    .await
+                    .context("Failed to write respone frame to TCP stream")?;
+
+                self.stream
+                    .flush()
+                    .await
+                    .context("Failed to flush TCP stream after write")?;
+
+                self.buf.clear();
+            }
+        }
+
         Ok(())
     }
 }
@@ -398,6 +423,25 @@ pub fn read_crlf_line(buf: &mut BytesMut) -> anyhow::Result<Option<Vec<u8>>> {
     Err(anyhow::anyhow!(
         "Fromatting error in reading received payload -- failed to find CRLF delimeter in request"
     ))
+}
+
+pub fn parse_hex(hex_string: &str) -> Vec<u8> {
+    let mut decoded_bytes_buf = Vec::new();
+    let mut iter = hex_string.chars();
+
+    while let (Some(first_hex), Some(second_hex)) = (iter.next(), iter.next()) {
+        let hex_val = format!("{}{}", first_hex, second_hex);
+        let byte =
+            u8::from_str_radix(&hex_val, 16).expect("Error: Failed to parse provided hex string");
+
+        decoded_bytes_buf.push(byte);
+    }
+    // println!(
+    //     "in parse of hex, res: {:?}",
+    //     String::from_utf8_lossy(&decoded_bytes_buf)
+    // );
+
+    decoded_bytes_buf
 }
 
 // NOTES on data shape / cmds:
